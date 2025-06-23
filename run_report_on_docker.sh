@@ -83,6 +83,11 @@ if ! docker cp "${CONTAINER_NAME}:${CONTAINER_OUTPUT_FILE}" "${HOST_OUTPUT_FILE}
     exit 1
 fi
 
+log ""
+log "Files in Oracle Trace > 1 MB  /opt/oracle/diag/rdbms/orclcdb/ORCLCDB/trace"
+docker exec -u oracle "${CONTAINER_NAME}" bash -c "cd /opt/oracle/diag/rdbms/orclcdb/ORCLCDB/trace && find . -type f -size +1M -exec du -h {} \; | sort -rh"
+log ""
+
 # --- 4. Cleanup temporary files inside the container ---
 log "Step 4: Cleaning up temporary files inside the container..."
 docker exec "${CONTAINER_NAME}" rm "${CONTAINER_SQL_PATH}" "${CONTAINER_OUTPUT_FILE}"

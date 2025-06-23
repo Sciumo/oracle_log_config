@@ -1,3 +1,5 @@
 /oracle-docker-images
 /docker
 /logs
+
+*.zip

@@ -23,6 +23,8 @@ SET HEADING ON
 -- The first argument passed to this script will be used as the output file name
 SPOOL &1
 
+DBMS_OUTPUT.ENABLE(1000000);
+
 PROMPT ===============================================
 PROMPT ORACLE DATABASE LOGGING CONFIGURATION REPORT
 PROMPT ===============================================
@@ -196,14 +198,103 @@ GROUP BY to_char(first_time, 'YYYY-MM-DD HH24')
 ORDER BY hour;
 
 PROMPT
-PROMPT Large Diagnostic Files (>10MB) - Includes Trace and Audit XML Files:
-COLUMN trace_filename FORMAT A100
-SELECT trace_filename,
-       sizeblks*block_size/1024/1024 as size_mb,
-       to_char(change_time, 'YYYY-MM-DD HH24:MI:SS') as last_modified
-FROM v$diag_trace_file
-WHERE sizeblks*block_size > 10*1024*1024
-ORDER BY sizeblks DESC;
+PROMPT ===============================================
+PROMPT GOLDENGATE REPLICATION DIAGNOSTICS
+PROMPT ===============================================
+
+PROMPT
+PROMPT GoldenGate Related Database Parameters:
+COLUMN name FORMAT A40
+COLUMN value FORMAT A40
+SELECT name, value
+FROM v$parameter
+WHERE lower(name) LIKE '%goldengate%'
+   OR name IN ('streams_pool_size')
+ORDER BY name;
+
+PROMPT
+PROMPT Database-Level Supplemental Logging Status:
+COLUMN supplemental_log_data_min FORMAT A25
+COLUMN supplemental_log_data_pk FORMAT A25
+COLUMN supplemental_log_data_ui FORMAT A25
+COLUMN supplemental_log_data_fk FORMAT A25
+COLUMN supplemental_log_data_all FORMAT A25
+SELECT supplemental_log_data_min, supplemental_log_data_pk,
+       supplemental_log_data_ui, supplemental_log_data_fk, supplemental_log_data_all
+FROM v$database;
+
+PROMPT
+PROMPT GoldenGate User Status (Common Names: GGADMIN, C##GGADMIN):
+COLUMN username FORMAT A30
+COLUMN account_status FORMAT A20
+COLUMN default_tablespace FORMAT A30
+SELECT username, account_status, created, default_tablespace
+FROM dba_users
+WHERE username LIKE 'GG%' OR username LIKE 'C##GG%';
+
+PROMPT
+PROMPT GoldenGate Capture Process Status (from DB perspective):
+DECLARE
+  l_header_printed BOOLEAN := FALSE;
+BEGIN
+  FOR rec IN (
+    SELECT
+      capture_name,                 -- The unique name of the capture process. Essential for identification.
+      state,                        -- The detailed current activity (e.g., 'CAPTURING CHANGES'). This is the most important column for troubleshooting hangs or performance issues.
+      total_messages_captured,      -- Total redo entries processed since the last start. A key throughput metric to verify the process is active.
+      total_messages_sent,          -- Total LCRs sent to the GoldenGate Extract. Comparing with messages captured shows if data is flowing out.
+      elapsed_redo_wait_time,       -- Time (in centiseconds) spent waiting for new redo. High values indicate source DB inactivity, not a GoldenGate problem.
+      elapsed_pause_time,           -- Time (in centiseconds) spent paused for flow control. High values indicate a downstream (Replicat) bottleneck.
+      available_message_number,     -- The SCN of the last record available in the redo logs. This shows the most recent data the capture process *can* see.
+      spid                          -- The operating system process ID. Critical for checking CPU/memory usage on the database server itself.
+    FROM v$goldengate_capture
+  )
+  LOOP
+    IF NOT l_header_printed THEN
+      dbms_output.put_line(rpad('CAPTURE_NAME', 31) || rpad('STATE', 30) || rpad('AVAILABLE_SCN', 20) || rpad('SPID', 13));
+      dbms_output.put_line(rpad('-', 30, '-') || ' ' || rpad('-', 29, '-') || ' ' || rpad('-', 19, '-') || ' ' || rpad('-', 12, '-'));
+      l_header_printed := TRUE;
+    END IF;
+    dbms_output.put_line(
+        rpad(NVL(rec.capture_name, 'N/A'), 31) ||
+        rpad(NVL(rec.state, 'N/A'), 30) ||
+        rpad(NVL(rec.available_message_number, 'N/A'), 20) ||
+        rec.spid
+    );
+    -- Print detailed metrics on a new line for readability
+    dbms_output.put_line(
+        '  Metrics: Msgs Captured=' || rec.total_messages_captured ||
+        ', Msgs Sent=' || rec.total_messages_sent ||
+        ', Redo Wait(cs)=' || rec.elapsed_redo_wait_time ||
+        ', Pause Wait(cs)=' || rec.elapsed_pause_time
+    );
+     dbms_output.put_line(' '); -- Blank line for spacing between processes
+  END LOOP;
+
+  IF NOT l_header_printed THEN
+    dbms_output.put_line('No GoldenGate Integrated Capture processes found or V$GOLDENGATE_CAPTURE is not accessible.');
+    dbms_output.put_line('This is expected if Integrated Extract is not configured in this database.');
+  END IF;
+
+EXCEPTION
+  WHEN OTHERS THEN
+    dbms_output.put_line('Could not query V$GOLDENGATE_CAPTURE. Integrated Capture may not be configured.');
+    dbms_output.put_line('SQL Error: ' || sqlerrm);
+END;
+/
+
+PROMPT
+PROMPT Key Privileges for GoldenGate User(s):
+COLUMN grantee FORMAT A30
+COLUMN privilege FORMAT A40
+SELECT grantee, privilege
+FROM dba_sys_privs
+WHERE (grantee LIKE 'GG%' OR grantee LIKE 'C##GG%')
+  AND privilege IN ('CREATE SESSION', 'ALTER SESSION', 'SELECT ANY DICTIONARY',
+                    'SELECT ANY TABLE', 'FLASHBACK ANY TABLE', 'EXECUTE ANY PROCEDURE',
+                    'ALTER ANY TABLE')
+ORDER BY grantee, privilege;
+
 
 SPOOL OFF
 SET FEEDBACK ON
